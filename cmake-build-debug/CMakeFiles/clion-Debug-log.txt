@@ -1,0 +1,4 @@
+/opt/clion-2024.2.2/bin/cmake/linux/x64/bin/cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_MAKE_PROGRAM=/opt/clion-2024.2.2/bin/ninja/linux/x64/ninja -G Ninja -DPython_EXECUTABLE=/home/dell/anaconda3/envs/pytorch-1.12.1/bin/python3.7 -DPython3_EXECUTABLE=/home/dell/anaconda3/envs/pytorch-1.12.1/bin/python3.7 -S /home/dell/CLionProjects/DSDP/MARLIP_1 -B /home/dell/CLionProjects/DSDP/MARLIP_1/cmake-build-debug
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/dell/CLionProjects/DSDP/MARLIP_1/cmake-build-debug

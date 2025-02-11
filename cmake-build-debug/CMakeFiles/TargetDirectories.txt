@@ -1,0 +1,3 @@
+/home/dell/CLionProjects/DSDP/MARLIP_1/cmake-build-debug/CMakeFiles/MARLIP_1.dir
+/home/dell/CLionProjects/DSDP/MARLIP_1/cmake-build-debug/CMakeFiles/edit_cache.dir
+/home/dell/CLionProjects/DSDP/MARLIP_1/cmake-build-debug/CMakeFiles/rebuild_cache.dir
