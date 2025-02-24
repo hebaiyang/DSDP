@@ -1,6 +1,3 @@
-//
-// Created by dell on 25-2-11.
-//
 #include <iostream>
 #include <vector>
 
