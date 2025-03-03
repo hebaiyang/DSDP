@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD 14)
 add_library(dynamic_planner SHARED
         data_generator.cpp
         knapsack.cpp
+        dual_factor.cpp
 )
 
 # 设置C++标准和编译选项

@@ -8,6 +8,9 @@ import collections
 import ctypes
 import os
 
+from torch.distributions import Normal
+
+
 # 定义 C++ 函数原型和数据结构
 class OrderPlate(ctypes.Structure):
     _fields_ = [("thickness", ctypes.c_int), ("width", ctypes.c_int),("length", ctypes.c_int),
@@ -27,6 +30,18 @@ lib.generate_data.restype = ctypes.c_int
 
 lib.read_data.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.POINTER(OrderPlate)), ctypes.POINTER(ctypes.POINTER(Slab)), ctypes.POINTER(ctypes.POINTER(RollingMethod))]
 lib.read_data.restype = ctypes.c_void_p
+
+
+# 设置 C++ 函数原型
+lib.solveLinearProgramming.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # benefit_pool
+    ctypes.POINTER(ctypes.POINTER(OrderPlate)),  # scheme_pool
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+]
+lib.solveLinearProgramming.restype = ctypes.POINTER(ctypes.c_double)  # 返回对偶变量的指针
+
+
+
 
 
 # 定义ReplayBuffer类
@@ -51,30 +66,20 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-# 定义状态、观察和策略
-class MultiAgentState:
-    def __init__(self, order_boards, slabs, rolling_methods):
-        self.order_boards = order_boards  # 所有订单板
-        self.slabs = slabs  # 所有板坯
-        self.rolling_methods = rolling_methods  # 所有轧制方法
+# Value Net
+class ValueNet(nn.Module):
+    def __init__(self, state_size, hidden_size):
+        super(ValueNet, self).__init__()
+        self.linear1 = nn.Linear(state_size, hidden_size)
+        self.linear2 = nn.Linear(hidden_size, hidden_size)
+        self.linear3 = nn.Linear(hidden_size, 1)
 
-    def get_state(self, remaining_order_boards, current_order_boards):
-        # 状态是剩余订单板和当前订单板的并集，包含厚度、宽度、长度
-        return np.concatenate([remaining_order_boards, current_order_boards], axis=0)
+    def forward(self, state):
+        x1 = F.relu(self.linear1(state))
+        x2 = F.relu(self.linear2(x1))
+        x3 = self.linear3(x2)
 
-    def get_observation(self, agent_type, I_t, slab_data=None, rolling_method_data=None):
-        if agent_type == "slab":
-            # 选择板坯的智能体的观察：所有板坯的特征
-            return np.array([[slab.thickness, slab.width, slab.length] for slab in slab_data])
-        elif agent_type == "rolling_method":
-            # 选择轧制方法的智能体的观察：所有轧制方法的系数
-            return np.array([method.coefficient for method in rolling_method_data])
-        elif agent_type == "order_board_selection":
-            # 选择m个订单板的智能体的观察：当前I_t中的订单板特征
-            return np.array([[order.thickness, order.width, order.length] for order in I_t])
-        elif agent_type == "order_board_k1_k2":
-            # 选择k1, k2订单板的智能体的观察：所有订单板的特征
-            return np.array([[order.thickness, order.width, order.length] for order in I_t])
+        return x3
 
 
 # Q网络定义（SAC中使用）
@@ -92,18 +97,63 @@ class QNetwork(nn.Module):
         return self.fc3(x)  # 输出全局Q值
 
 
+class DeltaNet(nn.Module):
+    def __init__(self, input_dim):
+        super(DeltaNet, self).__init__()
+        self.fc1 = nn.Linear(input_dim, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 1)  # 输出一个标量，即温度参数 alpha
+
+    def forward(self, state):
+        x = F.relu(self.fc1(state))
+        x = F.relu(self.fc2(x))
+        log_alpha = self.fc3(x)
+        alpha = torch.sigmoid(log_alpha)  # 使用 Sigmoid 函数将输出限制在 [0, 1] 范围内
+        return alpha
+
+
 # 策略网络定义（每个智能体对应一个策略网络）
 class PolicyNetwork(nn.Module):
-    def __init__(self, obs_size, act_size, hidden_size=256):
+    def __init__(self, obs_size, act_size,  device, hidden_size=256):
         super(PolicyNetwork, self).__init__()
+        self.device = device
         self.fc1 = nn.Linear(obs_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, act_size)  # 输出动作
+        self.mean_linear = nn.Linear(hidden_size, act_size)
+        self.log_std_linear = nn.Linear(hidden_size, act_size)
 
     def forward(self, obs):
-        x = F.relu(self.fc1(obs))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)  # 输出动作
+        x0 = F.relu(self.fc1(obs))
+        x1 = F.relu(self.fc2(x0))
+        x2 = self.fc3(x1)
+
+        mean = self.mean_linear(x2)
+        log_std = self.log_std_linear(x2)
+        std = torch.exp(log_std)
+        return mean,std  # 输出动作
+
+    def action(self, observation):
+        observation = torch.FloatTensor(observation).to(self.device)
+        mean, log_std = self.forward(observation)
+        std = log_std.exp()
+        normal = Normal(mean, std)
+        z = normal.sample()
+        action = torch.tanh(z).detach().numpy()
+
+        return action
+
+    def evaluate(self, obs,epsilon=1e-6):
+        mean, std = self.forward(obs)
+        normal = Normal(mean, std)
+        noise = Normal(0,1)
+
+        z=noise.sample()
+        action = torch.tanh(mean + std * z.to(self.device))
+        log_prob = normal.log_prob(mean + std * z.to(self.device)) - torch.log(1 - action.pow(2) + epsilon)
+        log_prob = log_prob.sum(1,keepdim=True)
+
+        return action, log_prob
 
 
 # Pointer Network
@@ -127,125 +177,196 @@ class PointerNetwork(nn.Module):
         attn_weights = self.attn_layer(lstm_out)
         attn_weights = F.softmax(attn_weights, dim=1)  # 对输出进行softmax，获得注意力权重
 
+        return attn_weights
+
+
+    def action(self, x):
+        attn_weights = self.forward(x)
         # 根据注意力权重选择最重要的m个订单板
         selected_indices = torch.topk(attn_weights, self.num_selected, dim=1).indices
         return selected_indices
 
 
+    def evaluate(self, x):
+        attn_weights = self.forward(x)
+        probs, selected_indices = torch.topk(attn_weights, self.num_selected, dim=1).indices
+        return probs, selected_indices
+
+
 # SAC Agent类定义
 class SACAgent:
-    def __init__(self, obs_size, act_size, input_size, hidden_size, num_selected, lr=1e-3, gamma=0.99, tau=0.005, beta=0.01):
+    def __init__(self, obs_size, agent_index, act_size, input_size, hidden_size, num_selected, lr):
         self.policy = PolicyNetwork(obs_size, act_size)
-        self.q1 = QNetwork(obs_size, act_size)
-        self.target_q1 = QNetwork(obs_size, act_size)
-
-        # 添加指针网络以选择订单板
-        self.pointer_network = PointerNetwork(input_size, hidden_size, num_selected)
+        if agent_index == 0 or agent_index == 1:
+            self.policy = PointerNetwork(input_size, hidden_size, num_selected)
 
         self.optimizer_policy = optim.Adam(self.policy.parameters(), lr=lr)
-        self.optimizer_q1 = optim.Adam(self.q1.parameters(), lr=lr)
 
-        # 复制q1到target_q1
-        self.target_q1.load_state_dict(self.q1.state_dict())
 
-        self.gamma = gamma
-        self.tau = tau
-        self.beta = beta
 
-    def select_action(self, angent_index, joint_observation):
-        """
-        # 根据订单板选择的索引，选择具体的订单
-        # """
-        # if agent_type == "slab":
-        #     observation = torch.Tensor([slab.thickness, slab.width, slab.length] for slab in slabs)
-        # elif agent_type == "rolling_method":
-        #     observation = torch.Tensor([method.coefficient for method in rolling_methods])
-        # elif agent_type == "order_board_selection":
-        #     observation = torch.Tensor([[order.thickness, order.width, order.length] for order in order_boards])
-        # else:
-        #     # 选择订单板k1, k2
-        #     observation = torch.Tensor([[order.thickness, order.width, order.length] for order in order_boards])
 
+    def select_action(self, agent_index, joint_observation):
         # 策略网络根据观察选择动作
-        if angent_index == 1:
-            action = self.pointer_network(joint_observation[angent_index])
-        else:
-            action = self.policy(joint_observation[angent_index])
+        action = self.policy.action(obs=joint_observation[agent_index])
         return action
 
-    def update(self, replay_buffer, batch_size):
-        obs, action, reward, next_obs, done, order_boards, slabs, rolling_methods = replay_buffer.sample(batch_size)
+    def evaluate_action(self,agent_index,joint_observation):
+        action, log_prob = self.policy.evaluate(obs=joint_observation[agent_index])
+        return action, log_prob
 
-        # 计算联合Q值
-        joint_actions = torch.cat(action, dim=-1)  # 联合动作
-        q_value = self.q1(obs, joint_actions)
+    def update(self, new_log_prob, q_value):
 
-        with torch.no_grad():
-            next_action = self.policy(next_obs)
-            target_q_value = self.target_q1(next_obs, next_action)
-            target_q_value = reward + self.gamma * target_q_value * (1 - done)
+        return 0
 
-        # 计算Q值损失
-        loss_q = F.mse_loss(q_value, target_q_value)
 
-        self.optimizer_q1.zero_grad()
-        loss_q.backward()
-        self.optimizer_q1.step()
 
-        # 联合策略网络的损失函数
-        joint_action = torch.cat(action, dim=-1)  # 联合动作
-        policy_loss = 0
-        for i in range(4):
-            # 每个智能体的动作在联合动作中的损失
-            pi = self.policy(obs)  # 策略网络输出
-            policy_loss += torch.mean(torch.log(pi) - (1 / self.beta) * q_value)
-
-        self.optimizer_policy.zero_grad()
-        policy_loss.backward()
-        self.optimizer_policy.step()
-
-        # 执行软更新
-        self.soft_update(self.target_q1, self.q1)
-
-    def soft_update(self, target, source):
-        for target_param, source_param in zip(target.parameters(), source.parameters()):
-            target_param.data.copy_(self.tau * source_param.data + (1.0 - self.tau) * target_param.data)
 
 
 # 环境类，管理多个智能体
 class MultiAgentEnv:
-    def __init__(self, agents, n_agents, env_params):
-        self.agents = agents
-        self.env_params = env_params
+    def __init__(self):
+        self.num_selected = 30
+        self.n_agents = 4
+        self.lr = 0.00002
+        self.max_num_slabs = 20
+        self.max_num_rolling_methods = 15
+        self.obs_size_list = [0, 3*self.num_selected, 3* self.max_num_slabs, 3*self.max_num_rolling_methods]
+        self.act_size_list = [self.num_selected, 2, 1, 1]
+        self.input_size = 8
+        self.hidden_size = 256
+        self.agents = [SACAgent(self.obs_size_list[i], self.act_size_list[i],self.input_size,self.hidden_size,self.num_selected,self.lr) for i in range(self.n_agents)]
+
+        self.state_size = 1000
+        self.observation_size = 2000
+        self.hidden_size = 32
+        self.action_size = 30
+        self.gamma = 0.00001
+        self.tau = 0.005
+        self.beta = 0.0001
+        self.T = 2000
         self.order_plates = None
+        self.order_plates_pool = []
         self.slabs = None
         self.rolling_methods = None
         self.obj_weights = [0.9, 0.1]
+        self.v = 0.4
+        self.scheme_pool = []
+        self.benefit_pool = []
+
+        self.V = 1.0
+
+        self.target_q_net = ValueNet(self.state_size,self.hidden_size)
+        self.q_net = QNetwork(self.observation_size,self.action_size,self.hidden_size)
+        self.delta_net = DeltaNet(2)
+
+        # Initialize the optimizer
+        self.target_q_net_optimizer = optim.Adam(self.target_q_net.parameters(), lr=self.lr)
+        self.q_net_optimizer = optim.Adam(self.q_net.parameters(), lr=self.lr)
+        self.delta_net_optimizer = optim.Adam(self.delta_net.parameters(), lr=self.lr)
+        self.policy_optimizer = optim.Adam(list(self.agents[0].policy.parameters()) + list(self.agents[1].policy.parameters()) +
+                               list(self.agents[2].policy.parameters()) + list(self.agents[3].policy.parameters()), lr=self.lr)
 
     def reset(self, instance_num):
         data_filename = "instance"+str(instance_num)
         self.generate_new_DSDI(data_filename)
+        max_volume_slab = max(self.slabs, key=lambda slab: slab.thickness*slab.width*slab.length)
+        self.V = self.v * max_volume_slab
         joint_observation = self.construct_observation(self.order_plates[0],self.slabs,self.rolling_methods)
         global_state = self.construct_state(joint_observation)
+        self.order_plates_pool = self.order_plates[0]
 
         return joint_observation, global_state
 
-    def step(self, joint_action, selected_order_plates, step_index):
-        next_joint_observation = self.construct_observation(selected_order_plates[step_index],self.slabs,self.rolling_methods)
+    def step(self, joint_action, selected_order_plates, t):
+        reward, produced_order_plate_indices = self.calculate_reward(joint_action, selected_order_plates, t)
+        self.generate_possible_scheme(t)
+        remain_order_plates = [ord_pla for ord_pla in self.order_plates_pool if ord_pla.index not in produced_order_plate_indices]
+        self.order_plates_pool = remain_order_plates
+        for ord_pla in self.order_plates[t]:
+            self.order_plates_pool.append(ord_pla)
+        next_joint_observation = self.construct_observation(self.order_plates_pool,self.slabs,self.rolling_methods)
         next_global_state = self.construct_state(next_joint_observation)
-        reward = self.calculate_reward(joint_action, selected_order_plates)
         done = False
+
         return next_global_state, next_joint_observation, reward, done
 
-    def calculate_reward(self, joint_action, selected_order_plates):
+    def generate_possible_scheme(self, t):
+        used_order_plates = self.order_plates_pool
+        rand_list = [0 if random.randint(1,10) < 5 else 1 for i in range(len(used_order_plates))]
+        for i in range(len(used_order_plates)):
+            if rand_list[i] == 0:
+                used_order_plates.remove(used_order_plates[i])
+                rand_list.remove(rand_list[i])
+                i = i -1
+
+        joint_observation = self.construct_observation(used_order_plates,self.slabs,self.rolling_methods)
+        joint_action = []
+        selected_order_plates = []
+
+        for i in range(4):
+            if i == 1:
+                for j in range(len(joint_action[0])):
+                    selected_order_plates.append(self.order_plates[joint_action[0][j]])
+                self.update_observation(selected_order_plates,joint_observation)
+            action, lob_prob = self.agents[i].select_action(i,joint_observation)
+            joint_action.append(action)
+
+        selected_slab = self.slabs[joint_action[2]]
+        selected_rolling_method = self.rolling_methods[joint_action[3]]
+        reward, produced_order_plate_indices = self.calculate_reward(joint_action,selected_order_plates,t)
+        self.scheme_pool[t][selected_slab.index][selected_rolling_method.index] = [self.order_plates[i] for i in produced_order_plate_indices]
+        self.benefit_pool[t][selected_slab.index][selected_rolling_method.index] = reward
+
+
+
+    def calculate_reward(self, joint_action, selected_order_plates, t):
         selected_slab = self.slabs[joint_action[2]]
         selected_rolling_method = self.rolling_methods[joint_action[3]]
         produced_order_plate_indices = lib.TwoCDP(selected_order_plates,selected_slab,selected_rolling_method)
         total_volume = sum(order_plate.thickness * order_plate.width * order_plate.length for order_plate in selected_order_plates if order_plate.index in produced_order_plate_indices)
         reward = (self.obj_weights[0] * total_volume +
                   self.obj_weights[1] * (selected_slab.thickness * selected_slab.width * selected_slab.length - total_volume))
-        # 计算联合奖励：基于所有智能体的动作来计算奖励
+        self.scheme_pool[t][selected_slab.index][selected_rolling_method.index] = [self.order_plates[i] for i in produced_order_plate_indices]
+        self.benefit_pool[t][selected_slab.index][selected_rolling_method.index] = reward
         return reward, produced_order_plate_indices
+
+
+    def call_dual_factor(self):
+        T1, J1, G1, Q1 = self.benefit_pool.shape
+        result_ptr = lib.solveLinearProgramming(self.benefit_pool, self.scheme_pool, T1, J1, G1, Q1)
+
+        dual_values = np.ctypeslib.as_array(result_ptr, shape=(T1 * J1 * G1 * Q1,))
+
+        return dual_values
+
+    def calculate_policy_weight(self,dual_values, num_order_plates, num_slabs, num_rolling_methods, T1):
+        omega = [0, 0, 0, 0]
+
+        temp1 = [num_order_plates-1, num_order_plates, num_order_plates+T1*num_slabs, len(dual_values)]
+
+        for i in range(temp1[0]):
+            omega[0] += dual_values[i]
+        omega[0] = omega[0]*self.num_selected/num_order_plates
+
+        for i in range(temp1[0]):
+            omega[1] += dual_values[i]
+        omega[1] = omega[1]* 2/ num_order_plates
+
+        for tau in range(T1):
+            for j in range(num_slabs):
+                omega[2] += dual_values[temp1[1]+1+tau*j]
+        omega[2] = omega[2]/ (num_slabs * (T1 +1 ))
+
+        for tau in range(T1):
+            for g in range(num_rolling_methods):
+                omega[3] += dual_values[temp1[2] + 1 + tau * g]
+        omega[3] = omega[3]/ (num_rolling_methods*(T1+1))
+
+        policy_weight = [0, 0, 0, 0]
+        for i in range(4):
+            policy_weight[i] = omega[i]/sum(omega)
+
+        return  policy_weight
 
 
     def generate_new_DSDI(self, data_filename):
@@ -313,46 +434,104 @@ class MultiAgentEnv:
 
         return current_order_plates
 
+    def update(self, replay_buffer, batch_size, t):
+        global_state_batch, joint_observation_batch, joint_action_batch, reward_batch, next_state_batch, done_batch = replay_buffer.sample(batch_size)
+
+        new_joint_action = []
+        selected_order_plates=[]
+        new_log_prob = []
+
+        for i in range(4):
+            if i == 1:
+                for j in range(len(new_joint_action[0])):
+                    selected_order_plates.append(self.order_plates[new_joint_action[0][j]])
+                self.update_observation(selected_order_plates,joint_observation_batch)
+            action, lob_prob = self.agents[i].select_action(i,joint_observation_batch)
+            new_joint_action.append(action)
+            new_log_prob.append(lob_prob)
+
+
+        value = self.target_q_net(global_state_batch)
+        new_q_value = self.q_net(global_state_batch,new_joint_action)
+        next_value = new_q_value-sum(new_log_prob)
+        value_loss = F.mse_loss(value, next_value)
+
+
+        # 计算联合Q值
+        q_value = self.q_net(global_state_batch, joint_action_batch)
+
+        with torch.no_grad():
+            target_value = self.target_q_net(next_state_batch)
+            target_q_value = reward_batch + self.gamma * target_value * done_batch
+
+        # 计算Q值损失
+        loss_q = F.mse_loss(q_value, target_q_value)
+
+        self.optimizer_q1.zero_grad()
+        loss_q.backward()
+        self.optimizer_q1.step()
+
+        self.value_optimizer.zero_grad()
+        value_loss.backward()
+        self.value_optimizer.step()
+
+        delta = self.delta_net(torch.tensor([q_value,self.V]))
+        # 联合策略网络的损失函数
+        policy_loss = torch.mean(sum(new_log_prob) - (1 / self.beta) * ((1+delta) * q_value - delta * (self.T-t+1)*self.V))
+
+        self.policy_optimizer.zero_grad()
+        policy_loss.backward()
+        self.policy_optimizer.step()
+
+        # for agent in self.agents:
+        #     agent.update(new_log_prob, q_value)
+
+        delta_loss = self.delta * (q_value - self.delta * (self.T-t+1)*self.V).detach().mean()
+        self.delta_optimizer.zero_grad()  # 清除上一步的梯度
+        delta_loss.backward()  # 计算新的梯度
+        self.delta_optimizer.step()  # 更新神经网络的参数
+
 
 # 训练多智能体
-def train_multi_agent(agents, env, num_episodes, batch_size, hyperparams):
+def train_multi_agent():
     # 初始化ReplayBuffer
     replay_buffer = ReplayBuffer(buffer_size=10000)
+    env = MultiAgentEnv()
+    num_episodes = 200
+    batch_size = 512
 
     for episode in range(num_episodes):
         joint_observation, global_state = env.reset(episode)
         done = False
         total_reward = 0
-
-        lr = hyperparams['lr']
-        agamma = hyperparams['gamma']
-        tau = hyperparams['tau']
-        beta = hyperparams['beta']
+        t = 0
 
         while not done:
             joint_action = []
             selected_order_plates = []
+            env.scheme_pool.append([[[] for g in len(env.rolling_methods)] for j in len(env.slabs)])
+            env.benefit_pool.append([[[] for g in len(env.rolling_methods)] for j in len(env.slabs)])
             # 获取每个智能体的行动和选择的订单板索引
             for i in env.n_agents:
                 if i == 1:
                     for j in range(len(joint_action[0])):
                         selected_order_plates.append(env.order_plates[joint_action[0][j]])
                     env.update_observation(selected_order_plates,joint_observation)
-                joint_action.append(agents[i].selection_action(i,joint_observation))
+                action = env.agents[i].select_action(i,joint_observation)
+                joint_action.append(action)
 
 
             # 将当前状态、动作、奖励、下一个状态等存入replay buffer
-            next_global_state, reward, done, _ = env.step(joint_action, selected_order_plates, episode)
+            next_global_state, next_joint_observation, reward, done, _ = env.step(joint_action, selected_order_plates, t)
             replay_buffer.add(global_state, joint_observation, joint_action, reward, next_global_state, done)
 
             # 每隔一定步骤，进行策略更新
             if replay_buffer.size() >= batch_size:
-                global_state_batch, joint_observation_batch, joint_action_batch, reward_batch, next_state_batch, done_batch = replay_buffer.sample(batch_size)
+                env.update(replay_buffer,batch_size,t)
 
-                for agent in agents:
-                    agent.update(replay_buffer, batch_size)
 
             total_reward += reward
             global_state = next_global_state
-
+            joint_observation = next_joint_observation
+            t = t + 1
         print(f"Episode {episode} | Total Reward: {total_reward}")

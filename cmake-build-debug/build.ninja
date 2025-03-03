@@ -49,12 +49,6 @@ cmake_ninja_workdir = /home/dell/CLionProjects/DSDP/MARLIP_1/cmake-build-debug/
 
 build cmake_object_order_depends_target_MARLIP_1: phony || .
 
-build CMakeFiles/MARLIP_1.dir/main.cpp.o: CXX_COMPILER__MARLIP_1_unscanned_Debug /home/dell/CLionProjects/DSDP/MARLIP_1/main.cpp || cmake_object_order_depends_target_MARLIP_1
-  DEP_FILE = CMakeFiles/MARLIP_1.dir/main.cpp.o.d
-  FLAGS = -g -std=gnu++2a -fdiagnostics-color=always
-  OBJECT_DIR = CMakeFiles/MARLIP_1.dir
-  OBJECT_FILE_DIR = CMakeFiles/MARLIP_1.dir
-
 build CMakeFiles/MARLIP_1.dir/cpp/data_generator.cpp.o: CXX_COMPILER__MARLIP_1_unscanned_Debug /home/dell/CLionProjects/DSDP/MARLIP_1/cpp/data_generator.cpp || cmake_object_order_depends_target_MARLIP_1
   DEP_FILE = CMakeFiles/MARLIP_1.dir/cpp/data_generator.cpp.o.d
   FLAGS = -g -std=gnu++2a -fdiagnostics-color=always
@@ -73,6 +67,12 @@ build CMakeFiles/MARLIP_1.dir/cpp/ReadData.cpp.o: CXX_COMPILER__MARLIP_1_unscann
   OBJECT_DIR = CMakeFiles/MARLIP_1.dir
   OBJECT_FILE_DIR = CMakeFiles/MARLIP_1.dir/cpp
 
+build CMakeFiles/MARLIP_1.dir/cpp/dual_factor.cpp.o: CXX_COMPILER__MARLIP_1_unscanned_Debug /home/dell/CLionProjects/DSDP/MARLIP_1/cpp/dual_factor.cpp || cmake_object_order_depends_target_MARLIP_1
+  DEP_FILE = CMakeFiles/MARLIP_1.dir/cpp/dual_factor.cpp.o.d
+  FLAGS = -g -std=gnu++2a -fdiagnostics-color=always
+  OBJECT_DIR = CMakeFiles/MARLIP_1.dir
+  OBJECT_FILE_DIR = CMakeFiles/MARLIP_1.dir/cpp
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target MARLIP_1
@@ -81,7 +81,7 @@ build CMakeFiles/MARLIP_1.dir/cpp/ReadData.cpp.o: CXX_COMPILER__MARLIP_1_unscann
 #############################################
 # Link the executable MARLIP_1
 
-build MARLIP_1: CXX_EXECUTABLE_LINKER__MARLIP_1_Debug CMakeFiles/MARLIP_1.dir/main.cpp.o CMakeFiles/MARLIP_1.dir/cpp/data_generator.cpp.o CMakeFiles/MARLIP_1.dir/cpp/knapsack.cpp.o CMakeFiles/MARLIP_1.dir/cpp/ReadData.cpp.o
+build MARLIP_1: CXX_EXECUTABLE_LINKER__MARLIP_1_Debug CMakeFiles/MARLIP_1.dir/cpp/data_generator.cpp.o CMakeFiles/MARLIP_1.dir/cpp/knapsack.cpp.o CMakeFiles/MARLIP_1.dir/cpp/ReadData.cpp.o CMakeFiles/MARLIP_1.dir/cpp/dual_factor.cpp.o
   FLAGS = -g
   OBJECT_DIR = CMakeFiles/MARLIP_1.dir
   POST_BUILD = :

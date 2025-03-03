@@ -24,7 +24,5 @@ double knapsack(const std::vector<Order>& orders, double capacity) {
 }
 
 extern "C" {
-    double knapsack_cpp(std::vector<Order> *orders, double capacity) {
-        return knapsack(*orders, capacity);
-    }
+    double knapsack_cpp(std::vector<Order>& orders, double capacity);
 }

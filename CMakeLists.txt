@@ -6,4 +6,5 @@ set(CMAKE_CXX_STANDARD 20)
 add_executable(MARLIP_1
         cpp/data_generator.cpp
         cpp/knapsack.cpp
-        cpp/ReadData.cpp)
+        cpp/ReadData.cpp
+        cpp/dual_factor.cpp)
